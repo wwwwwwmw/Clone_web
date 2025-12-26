@@ -51,3 +51,18 @@ body {
   );
   background-size: 1000px 100%;
 }
+
+/* Resizable preview container */
+.resize {
+  resize: both;
+  overflow: auto;
+  min-width: 320px;
+  min-height: 400px;
+  max-width: 100%;
+}
+
+/* Custom resize handle styling */
+.resize::-webkit-resizer {
+  background: linear-gradient(135deg, transparent 50%, #3b82f6 50%);
+  border-radius: 0 0 4px 0;
+}

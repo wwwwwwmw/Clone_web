@@ -1,7 +1,17 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Initialize Gemini client
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+let genAI;
+try {
+  if (!process.env.GEMINI_API_KEY) {
+    console.error('⚠️  GEMINI_API_KEY not found in environment variables');
+  } else {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    console.log('✅ Gemini AI client initialized successfully');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize Gemini client:', error.message);
+}
 
 /**
  * Generates backend code (SQL schema and Node.js route) based on HTML
@@ -11,43 +21,50 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function generateBackendCode(htmlString) {
   try {
     if (!process.env.GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured');
+      throw new Error('GEMINI_API_KEY is not configured in .env file');
     }
 
-    console.log('Calling Gemini API...');
+    if (!genAI) {
+      throw new Error('Gemini AI client not initialized');
+    }
 
-    const prompt = `You are an expert backend developer. Analyze the provided HTML and generate appropriate backend code.
+    console.log('🤖 Calling Gemini API (gemini-1.5-flash)...');
 
-Your task:
-1. Identify all forms, inputs, and data collection elements in the HTML
-2. Design a PostgreSQL database schema that would support this UI
-3. Create a Node.js Express route to handle CRUD operations for the identified data
+    // Improved prompt for better JSON output
+    const prompt = `You are an expert backend developer. Analyze the HTML below and generate backend code.
 
 HTML to analyze:
 \`\`\`html
-${htmlString.substring(0, 8000)}
+${htmlString.substring(0, 6000)}
 \`\`\`
 
-Return ONLY a valid JSON object with this exact structure (no markdown, no code blocks, no extra text):
+YOUR TASK:
+1. Identify forms, inputs, and data fields in the HTML
+2. Design a PostgreSQL schema to support this UI
+3. Create Express.js CRUD routes for the data
+
+CRITICAL: Return ONLY pure JSON. No markdown. No code blocks. No explanation.
+
+Use this EXACT JSON structure:
 {
-  "sqlSchema": "CREATE TABLE users (\\n  id SERIAL PRIMARY KEY,\\n  ...\\n);",
-  "nodeRoute": "const express = require('express');\\nconst router = express.Router();\\n...\\nmodule.exports = router;"
+  "sqlSchema": "CREATE TABLE example (\\n  id SERIAL PRIMARY KEY,\\n  name VARCHAR(255)\\n);",
+  "nodeRoute": "const express = require('express');\\nconst router = express.Router();\\n\\nrouter.get('/api/data', (req, res) => {\\n  res.json({ data: [] });\\n});\\n\\nmodule.exports = router;"
 }
 
-Important:
+RULES:
 - Use \\n for newlines in strings
-- Escape quotes properly
-- Return strict JSON only - no markdown code blocks
-- If no forms found, create a basic example schema/route
-- Include proper SQL data types and constraints
-- Include Express middleware (body-parser, etc.)
-- Add error handling in the route`;
+- Escape all quotes with \\
+- Return pure JSON only
+- If no forms exist, create a basic user table example
+- Include proper error handling in routes`;
 
     const model = genAI.getGenerativeModel({ 
-      model: process.env.GEMINI_MODEL || 'gemini-1.5-pro',
+      model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
       generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2000,
+        temperature: 0.3,
+        maxOutputTokens: 8192,
+        topP: 0.8,
+        topK: 40,
       }
     });
 
@@ -55,24 +72,48 @@ Important:
     const response = await result.response;
     let content = response.text();
     
-    // Remove markdown code blocks if present
-    content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    console.log('📥 Raw Gemini response received (first 200 chars):', content.substring(0, 200));
     
-    console.log('Gemini response received');
+    // Aggressive cleaning to extract JSON
+    content = content.trim();
+    
+    // Remove markdown code blocks
+    content = content.replace(/```json\s*/gi, '');
+    content = content.replace(/```javascript\s*/gi, '');
+    content = content.replace(/```\s*/g, '');
+    
+    // Remove any text before first { and after last }
+    const firstBrace = content.indexOf('{');
+    const lastBrace = content.lastIndexOf('}');
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      content = content.substring(firstBrace, lastBrace + 1);
+    }
+    
+    content = content.trim();
+    
+    console.log('🧹 Cleaned content (first 200 chars):', content.substring(0, 200));
 
     // Parse the JSON response
     let generatedCode;
     try {
       generatedCode = JSON.parse(content);
+      console.log('✅ Successfully parsed JSON response');
     } catch (parseError) {
-      console.error('Failed to parse AI response:', content);
-      throw new Error('AI returned invalid JSON format');
+      console.error('❌ JSON Parse Error:', parseError.message);
+      console.error('Content that failed to parse:', content.substring(0, 500));
+      throw new Error(`AI returned invalid JSON: ${parseError.message}`);
     }
 
     // Validate response structure
     if (!generatedCode.sqlSchema || !generatedCode.nodeRoute) {
+      console.error('❌ Missing required fields in response:', generatedCode);
       throw new Error('AI response missing required fields (sqlSchema or nodeRoute)');
     }
+
+    console.log('✅ Code generation successful');
+    console.log('   - SQL Schema length:', generatedCode.sqlSchema.length);
+    console.log('   - Node Route length:', generatedCode.nodeRoute.length);
 
     return {
       sqlSchema: generatedCode.sqlSchema,
@@ -80,19 +121,22 @@ Important:
     };
 
   } catch (error) {
-    console.error('AI Generation error:', error);
+    console.error('❌ AI Generation error:', error.message);
+    console.error('Error stack:', error.stack);
 
     // Check for specific Gemini errors
-    if (error.message && error.message.includes('API_KEY')) {
-      throw new Error('Invalid Gemini API key');
+    if (error.message && (error.message.includes('API_KEY') || error.message.includes('API key'))) {
+      throw new Error('Invalid or missing Gemini API key. Check your .env file.');
     } else if (error.message && error.message.includes('RATE_LIMIT')) {
-      throw new Error('Gemini API rate limit exceeded');
-    } else if (error.message && error.message.includes('QUOTA')) {
-      throw new Error('Gemini API quota exceeded');
+      throw new Error('Gemini API rate limit exceeded. Please try again later.');
+    } else if (error.message && (error.message.includes('QUOTA') || error.message.includes('quota'))) {
+      throw new Error('Gemini API quota exceeded. Check your Google Cloud quota.');
+    } else if (error.message && error.message.includes('blocked')) {
+      throw new Error('Content was blocked by Gemini safety filters.');
     }
 
     // Return fallback code if AI fails
-    console.log('Returning fallback backend code');
+    console.log('⚠️  Returning fallback backend code due to error');
     return getFallbackCode();
   }
 }

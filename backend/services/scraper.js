@@ -31,19 +31,40 @@ async function scrapeWebsite(url) {
     
     // Navigate to URL with timeout
     await page.goto(url, {
-      waitUntil: 'networkidle2',
-      timeout: 30000
+      waitUntil: 'networkidle0',
+      timeout: 45000
     });
 
-    // Wait a bit for any dynamic content
+    // Wait for dynamic content to load
+    await page.waitForTimeout(5000);
+
+    // Scroll to load lazy-loaded images
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 100;
+        const timer = setInterval(() => {
+          const scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            window.scrollTo(0, 0);
+            resolve();
+          }
+        }, 100);
+      });
+    });
+
     await page.waitForTimeout(2000);
 
-    // Extract HTML and CSS
+    // Extract HTML, CSS, and computed styles
     const extractedData = await page.evaluate(() => {
-      // Get the body HTML
-      const bodyHTML = document.body.innerHTML;
+      // Get the full HTML including head
+      const fullHTML = document.documentElement.outerHTML;
 
-      // Extract all inline styles and stylesheets
+      // Extract all CSS from style tags
       let cssContent = '';
       
       // Get all style tags
@@ -52,18 +73,72 @@ async function scrapeWebsite(url) {
         cssContent += tag.textContent + '\n';
       });
 
-      // Get external stylesheets (inline them)
+      // Try to fetch external stylesheets content
       const linkTags = document.querySelectorAll('link[rel="stylesheet"]');
       linkTags.forEach(link => {
         const href = link.getAttribute('href');
         if (href) {
-          cssContent += `/* External: ${href} */\n`;
+          cssContent += `/* External stylesheet: ${href} */\n`;
+        }
+      });
+
+      // Extract computed styles for better accuracy
+      const allElements = document.querySelectorAll('body *');
+      const computedStyles = [];
+      const processedClasses = new Set();
+      
+      allElements.forEach((element, index) => {
+        if (element.className && typeof element.className === 'string') {
+          const classes = element.className.split(' ').filter(c => c.trim());
+          classes.forEach(className => {
+            if (!processedClasses.has(className) && className.trim()) {
+              processedClasses.add(className);
+              const computed = window.getComputedStyle(element);
+              
+              // Extract key visual properties
+              const styles = {
+                'background-color': computed.backgroundColor,
+                'color': computed.color,
+                'font-size': computed.fontSize,
+                'font-weight': computed.fontWeight,
+                'font-family': computed.fontFamily,
+                'padding': computed.padding,
+                'margin': computed.margin,
+                'border': computed.border,
+                'border-radius': computed.borderRadius,
+                'display': computed.display,
+                'width': computed.width !== 'auto' ? computed.width : null,
+                'height': computed.height !== 'auto' ? computed.height : null,
+                'background-image': computed.backgroundImage,
+                'background-size': computed.backgroundSize,
+                'background-position': computed.backgroundPosition,
+                'box-shadow': computed.boxShadow,
+                'text-align': computed.textAlign,
+                'line-height': computed.lineHeight,
+                'opacity': computed.opacity,
+                'position': computed.position,
+                'z-index': computed.zIndex,
+                'overflow': computed.overflow,
+              };
+
+              // Build CSS rule
+              let cssRule = `.${className} {\n`;
+              Object.entries(styles).forEach(([prop, value]) => {
+                if (value && value !== 'none' && value !== 'normal' && value !== 'rgba(0, 0, 0, 0)') {
+                  cssRule += `  ${prop}: ${value};\n`;
+                }
+              });
+              cssRule += '}\n\n';
+              
+              computedStyles.push(cssRule);
+            }
+          });
         }
       });
 
       return {
-        html: bodyHTML,
-        css: cssContent
+        html: fullHTML,
+        css: cssContent + '\n\n/* Computed Styles for better accuracy */\n' + computedStyles.join('')
       };
     });
 

@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { scrapeWebsite } = require('./services/scraper');
@@ -72,12 +73,15 @@ app.post('/api/clone', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error in clone process:', error);
+    console.error('❌ Error in clone process:');
+    console.error('Error Message:', error.message);
+    console.error('Error Stack:', error.stack);
     
     res.status(500).json({
       success: false,
       error: error.message || 'Internal server error',
-      message: 'Failed to clone website. Please check the URL and try again.'
+      message: 'Failed to clone website. Please check the URL and try again.',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
